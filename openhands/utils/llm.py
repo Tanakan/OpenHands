@@ -53,4 +53,11 @@ def get_supported_llm_models(config: OpenHandsConfig) -> list[str]:
             except httpx.HTTPError as e:
                 logger.error(f'Error getting OLLAMA models: {e}')
 
+    # Add Cody models
+    try:
+        from openhands.llm.cody import CODY_MODELS
+        model_list.extend(CODY_MODELS)
+    except ImportError:
+        pass  # Cody not available
+
     return list(sorted(set(model_list)))

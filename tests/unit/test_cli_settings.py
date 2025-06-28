@@ -620,3 +620,155 @@ class TestModifyLLMSettingsAdvanced:
         # Verify settings were not changed
         app_config.set_llm_config.assert_not_called()
         settings_store.store.assert_not_called()
+
+
+
+class TestCodyProviderSettings:
+    """Test that Cody provider correctly prompts for base URL."""
+
+    @pytest.fixture
+    def app_config(self):
+        config = MagicMock(spec=OpenHandsConfig)
+        llm_config = MagicMock()
+        llm_config.model = "anthropic/claude-3-5-sonnet-20240620"
+        llm_config.api_key = None
+        llm_config.base_url = None
+        config.get_llm_config.return_value = llm_config
+        config.set_llm_config = MagicMock()
+        config.set_agent_config = MagicMock()
+        config.default_agent = "CodeActAgent"
+        config.enable_default_condenser = True
+
+        agent_config = MagicMock()
+        config.get_agent_config.return_value = agent_config
+
+        return config
+
+    @pytest.fixture
+    def settings_store(self):
+        store = MagicMock(spec=FileSettingsStore)
+        store.load = AsyncMock(return_value=None)
+        store.store = AsyncMock()
+        return store
+
+    @pytest.mark.asyncio
+    @patch("openhands.utils.llm.get_supported_llm_models")
+    @patch("openhands.cli.settings.VERIFIED_PROVIDERS", ["anthropic", "cody", "openai"])
+    @patch("openhands.cli.settings.PromptSession")
+    @patch("openhands.cli.settings.cli_confirm")
+    @patch("openhands.cli.settings.save_settings_confirmation")
+    @patch(
+        "openhands.cli.settings.LLMSummarizingCondenserConfig",
+        MockLLMSummarizingCondenserConfig,
+    )
+    async def test_cody_provider_prompts_for_base_url(
+        self,
+        mock_save_confirm,
+        mock_confirm,
+        mock_session,
+        mock_get_models,
+        app_config,
+        settings_store,
+    ):
+        # Mock the supported models
+        mock_get_models.return_value = [
+            {"model": "anthropic::2024-10-22::claude-3-5-sonnet-latest", "provider": "anthropic"},
+            {"model": "cody::2024-10-22::claude-sonnet-4-latest", "provider": "cody"},
+            {"model": "cody::2024-10-22::claude-3-5-sonnet-20241022", "provider": "cody"},
+        ]
+
+        # Mock user confirmations
+        mock_confirm.side_effect = [
+            1,  # Select "cody" provider (index 1 in verified providers)
+            0,  # Use default model
+        ]
+
+        # Mock save confirmation
+        mock_save_confirm.return_value = True
+
+        # Mock user inputs
+        session_instance = MagicMock()
+        session_instance.prompt_async = AsyncMock(
+            side_effect=[
+                "https://sourcegraph.company.com",  # Base URL for Cody
+                "test-api-key",  # API key
+            ]
+        )
+        mock_session.return_value = session_instance
+
+        # Call the function
+        await modify_llm_settings_basic(app_config, settings_store)
+
+        # Verify that prompt_async was called twice (base URL + API key)
+        assert session_instance.prompt_async.call_count == 2
+
+        # Verify the prompts
+        calls = session_instance.prompt_async.call_args_list
+        assert "Base URL" in calls[0][0][0]
+        assert "API Key" in calls[1][0][0]
+
+        # Verify settings were saved with base URL
+        saved_settings = settings_store.store.call_args[0][0]
+        assert saved_settings.llm_model == "cody::2024-10-22::claude-sonnet-4-latest"
+        assert saved_settings.llm_api_key.get_secret_value() == "test-api-key"
+        assert saved_settings.llm_base_url == "https://sourcegraph.company.com"
+
+    @pytest.mark.asyncio
+    @patch("openhands.utils.llm.get_supported_llm_models")
+    @patch("openhands.cli.settings.VERIFIED_PROVIDERS", ["anthropic", "cody", "openai"])
+    @patch("openhands.cli.settings.PromptSession")
+    @patch("openhands.cli.settings.cli_confirm")
+    @patch("openhands.cli.settings.save_settings_confirmation")
+    @patch(
+        "openhands.cli.settings.LLMSummarizingCondenserConfig",
+        MockLLMSummarizingCondenserConfig,
+    )
+    async def test_non_cody_provider_no_base_url_prompt(
+        self,
+        mock_save_confirm,
+        mock_confirm,
+        mock_session,
+        mock_get_models,
+        app_config,
+        settings_store,
+    ):
+        # Mock the supported models
+        mock_get_models.return_value = [
+            {"model": "anthropic::2024-10-22::claude-3-5-sonnet-latest", "provider": "anthropic"},
+            {"model": "openai/gpt-4", "provider": "openai"},
+        ]
+
+        # Mock user confirmations
+        mock_confirm.side_effect = [
+            0,  # Select "anthropic" provider (index 0 in verified providers)
+            0,  # Use default model
+        ]
+
+        # Mock save confirmation
+        mock_save_confirm.return_value = True
+
+        # Mock user inputs
+        session_instance = MagicMock()
+        session_instance.prompt_async = AsyncMock(
+            side_effect=[
+                "test-anthropic-key",  # API key only
+            ]
+        )
+        mock_session.return_value = session_instance
+
+        # Call the function
+        await modify_llm_settings_basic(app_config, settings_store)
+
+        # Verify that prompt_async was called only once (API key only)
+        assert session_instance.prompt_async.call_count == 1
+
+        # Verify the prompt
+        call = session_instance.prompt_async.call_args_list[0]
+        assert "API Key" in call[0][0]
+        assert "Base URL" not in call[0][0]
+
+        # Verify settings were saved without base URL
+        saved_settings = settings_store.store.call_args[0][0]
+        assert saved_settings.llm_model == "anthropic::2024-10-22::claude-3-5-sonnet-latest"
+        assert saved_settings.llm_api_key.get_secret_value() == "test-anthropic-key"
+        assert saved_settings.llm_base_url is None

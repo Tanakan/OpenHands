@@ -130,6 +130,12 @@ class LLM(RetryMixin, DebugMixin):
         )
         self.cost_metric_supported: bool = True
         self.config: LLMConfig = copy.deepcopy(config)
+        
+        # Debug logging for Cody models
+        if self.config.model.startswith('cody/'):
+            logger.debug(f'[LLM] Initializing Cody model: {self.config.model}')
+            logger.debug(f'[LLM] base_url from config: {self.config.base_url!r}')
+            logger.debug(f'[LLM] api_key present: {bool(self.config.api_key)}')
 
         self.model_info: ModelInfo | None = None
         self.retry_listener = retry_listener
@@ -187,21 +193,73 @@ class LLM(RetryMixin, DebugMixin):
         elif 'gemini' in self.config.model.lower() and self.config.safety_settings:
             kwargs['safety_settings'] = self.config.safety_settings
 
-        self._completion = partial(
-            litellm_completion,
-            model=self.config.model,
-            api_key=self.config.api_key.get_secret_value()
-            if self.config.api_key
-            else None,
-            base_url=self.config.base_url,
-            api_version=self.config.api_version,
-            custom_llm_provider=self.config.custom_llm_provider,
-            timeout=self.config.timeout,
-            top_p=self.config.top_p,
-            drop_params=self.config.drop_params,
-            seed=self.config.seed,
-            **kwargs,
-        )
+        # Handle Cody provider
+        if self.config.model.startswith('cody/'):
+            from openhands.llm.cody import get_cody_config
+            
+            # Debug logging for Cody configuration
+            logger.debug(f'[Cody] Handling Cody provider for model: {self.config.model}')
+            logger.debug(f'[Cody] Config base_url: {self.config.base_url}')
+            logger.debug(f'[Cody] Config api_key present: {bool(self.config.api_key)}')
+            
+            # Get Cody-specific configuration
+            cody_config = get_cody_config({
+                'model': self.config.model,
+                'api_key': self.config.api_key,
+                'base_url': self.config.base_url,
+            })
+            
+            # Debug log the resulting configuration
+            logger.debug(f'[Cody] Resulting cody_config: model={cody_config["model"]}, '
+                        f'api_base={cody_config["api_base"]}, '
+                        f'custom_llm_provider={cody_config["custom_llm_provider"]}')
+            
+            # Use Cody configuration
+            # Build kwargs conditionally to avoid passing None values
+            completion_kwargs = {
+                'model': cody_config['model'],
+                'api_key': cody_config['api_key'],
+                'custom_llm_provider': cody_config['custom_llm_provider'],
+                'timeout': self.config.timeout,
+                'top_p': self.config.top_p,
+                'drop_params': self.config.drop_params,
+                'seed': self.config.seed,
+                **kwargs,
+            }
+            
+            # For custom providers, litellm might expect both base_url and api_base
+            # Let's provide both to be safe
+            if cody_config['api_base'] is not None:
+                completion_kwargs['api_base'] = cody_config['api_base']
+                completion_kwargs['base_url'] = cody_config['api_base']  # Also set base_url
+                logger.debug(f'[Cody] Added api_base and base_url to completion kwargs: {cody_config["api_base"]}')
+            else:
+                logger.debug('[Cody] api_base is None, not adding to completion kwargs')
+                
+            # Only add api_version if it's not None
+            if self.config.api_version is not None:
+                completion_kwargs['api_version'] = self.config.api_version
+            
+            self._completion = partial(
+                litellm_completion,
+                **completion_kwargs
+            )
+        else:
+            self._completion = partial(
+                litellm_completion,
+                model=self.config.model,
+                api_key=self.config.api_key.get_secret_value()
+                if self.config.api_key
+                else None,
+                base_url=self.config.base_url,
+                api_version=self.config.api_version,
+                custom_llm_provider=self.config.custom_llm_provider,
+                timeout=self.config.timeout,
+                top_p=self.config.top_p,
+                drop_params=self.config.drop_params,
+                seed=self.config.seed,
+                **kwargs,
+            )
 
         self._completion_unwrapped = self._completion
 
@@ -291,6 +349,20 @@ class LLM(RetryMixin, DebugMixin):
             if 'litellm_proxy' not in self.config.model:
                 kwargs.pop('extra_body', None)
 
+            # Debug logging for Cody models
+            if self.config.model.startswith('cody/'):
+                logger.debug(f'[LLM Wrapper] About to call litellm with:')
+                logger.debug(f'[LLM Wrapper]   args: {args}')
+                logger.debug(f'[LLM Wrapper]   model: {self.config.model}')
+                # Check if api_base is in the partial function
+                if hasattr(self._completion_unwrapped, 'keywords'):
+                    partial_keywords = self._completion_unwrapped.keywords
+                    logger.debug(f'[LLM Wrapper]   Partial keywords: {list(partial_keywords.keys())}')
+                    if 'api_base' in partial_keywords:
+                        logger.debug(f'[LLM Wrapper]   api_base from partial: {partial_keywords["api_base"]!r}')
+                if 'api_base' in kwargs:
+                    logger.debug(f'[LLM Wrapper]   api_base from kwargs: {kwargs["api_base"]!r}')
+            
             # Record start time for latency measurement
             start_time = time.time()
             # we don't support streaming here, thus we get a ModelResponse
@@ -619,11 +691,14 @@ class LLM(RetryMixin, DebugMixin):
             prompt_tokens_details: PromptTokensDetails = usage.get(
                 'prompt_tokens_details'
             )
-            cache_hit_tokens = (
-                prompt_tokens_details.cached_tokens
-                if prompt_tokens_details and prompt_tokens_details.cached_tokens
-                else 0
-            )
+            # Handle both object and dict formats
+            if prompt_tokens_details:
+                if isinstance(prompt_tokens_details, dict):
+                    cache_hit_tokens = prompt_tokens_details.get('cached_tokens', 0)
+                else:
+                    cache_hit_tokens = getattr(prompt_tokens_details, 'cached_tokens', 0)
+            else:
+                cache_hit_tokens = 0
             if cache_hit_tokens:
                 stats += 'Input tokens (cache hit): ' + str(cache_hit_tokens) + '\n'
 

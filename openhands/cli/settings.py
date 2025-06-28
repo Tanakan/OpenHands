@@ -175,7 +175,7 @@ async def modify_llm_settings_basic(
         provider_choices = verified_providers + ['Select another provider']
         provider_choice = cli_confirm(
             config,
-            '(Step 1/3) Select LLM Provider:',
+            'Select LLM Provider:',
             provider_choices,
         )
 
@@ -202,7 +202,7 @@ async def modify_llm_settings_basic(
 
             provider = await get_validated_input(
                 session,
-                '(Step 1/3) Select LLM Provider (TAB for options, CTRL-c to cancel): ',
+                'Select LLM Provider (TAB for options, CTRL-c to cancel): ',
                 completer=provider_completer,
                 validator=provider_validator,
                 error_message='Invalid provider selected',
@@ -285,7 +285,7 @@ async def modify_llm_settings_basic(
 
             model = await get_validated_input(
                 session,
-                '(Step 2/3) Select LLM Model (TAB for options, CTRL-c to cancel): ',
+                'Select LLM Model (TAB for options, CTRL-c to cancel): ',
                 completer=model_completer,
                 validator=model_validator,
                 error_message='Model name cannot be empty',
@@ -294,11 +294,25 @@ async def modify_llm_settings_basic(
             # Use the default model
             model = default_model
 
-        api_key = await get_validated_input(
-            session,
-            '(Step 3/3) Enter API Key (CTRL-c to cancel): ',
-            error_message='API Key cannot be empty',
-        )
+        # For Cody provider, we need to prompt for base URL as well
+        base_url = None
+        if provider == 'cody':
+            base_url = await get_validated_input(
+                session,
+                'Enter Cody Base URL (CTRL-c to cancel): ',
+                error_message='Base URL cannot be empty',
+            )
+            api_key = await get_validated_input(
+                session,
+                'Enter Cody API Key (CTRL-c to cancel): ',
+                error_message='API Key cannot be empty',
+            )
+        else:
+            api_key = await get_validated_input(
+                session,
+                'Enter API Key (CTRL-c to cancel): ',
+                error_message='API Key cannot be empty',
+            )
 
     except (
         UserCancelledError,
@@ -318,7 +332,8 @@ async def modify_llm_settings_basic(
     llm_config = config.get_llm_config()
     llm_config.model = f'{provider}{organized_models[provider]["separator"]}{model}'
     llm_config.api_key = SecretStr(api_key)
-    llm_config.base_url = None
+    # Set base_url for Cody provider, None for others
+    llm_config.base_url = base_url if provider == 'cody' else None
     config.set_llm_config(llm_config)
 
     config.default_agent = OH_DEFAULT_AGENT
@@ -337,7 +352,8 @@ async def modify_llm_settings_basic(
 
     settings.llm_model = f'{provider}{organized_models[provider]["separator"]}{model}'
     settings.llm_api_key = SecretStr(api_key)
-    settings.llm_base_url = None
+    # Set base_url for Cody provider, None for others
+    settings.llm_base_url = base_url if provider == 'cody' else None
     settings.agent = OH_DEFAULT_AGENT
     settings.enable_default_condenser = True
 

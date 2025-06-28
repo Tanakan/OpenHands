@@ -81,9 +81,15 @@ def load_from_env(
             elif env_var_name in env_or_toml_dict:
                 # convert the env var to the correct type and set it
                 value = env_or_toml_dict[env_var_name]
+                
+                # Debug logging for Cody-related variables
+                if env_var_name == 'LLM_BASE_URL':
+                    logger.openhands_logger.debug(f'[Config] Found {env_var_name}={value!r}')
 
                 # skip empty config values (fall back to default)
                 if not value:
+                    if env_var_name == 'LLM_BASE_URL':
+                        logger.openhands_logger.debug(f'[Config] Skipping {env_var_name} because value is empty')
                     continue
 
                 try:
@@ -106,6 +112,10 @@ def load_from_env(
                         if field_type is not None:
                             cast_value = field_type(value)
                     setattr(sub_config, field_name, cast_value)
+                    
+                    # Debug logging for Cody-related variables
+                    if env_var_name == 'LLM_BASE_URL':
+                        logger.openhands_logger.debug(f'[Config] Set {field_name}={cast_value!r} on {sub_config.__class__.__name__}')
                 except (ValueError, TypeError):
                     logger.openhands_logger.error(
                         f'Error setting env var {env_var_name}={value}: check that the value is of the right type'
@@ -116,7 +126,11 @@ def load_from_env(
 
     # load default LLM config from env
     default_llm_config = cfg.get_llm_config()
+    logger.openhands_logger.debug(f'[Config] Before loading from env, LLM base_url: {default_llm_config.base_url!r}')
     set_attr_from_env(default_llm_config, 'LLM_')
+    logger.openhands_logger.debug(f'[Config] After loading from env, LLM base_url: {default_llm_config.base_url!r}')
+    # IMPORTANT: Set the updated config back into the llms dict
+    cfg.set_llm_config(default_llm_config, 'llm')
     # load default agent config from env
     default_agent_config = cfg.get_agent_config()
     set_attr_from_env(default_agent_config, 'AGENT_')
