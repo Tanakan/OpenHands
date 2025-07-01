@@ -1,0 +1,152 @@
+name: Build CLI Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x86_64
+          - os: macos-latest
+            platform: darwin
+            arch: x86_64
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+          - os: windows-latest
+            platform: windows
+            arch: x86_64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: latest
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    - name: Install dependencies
+      run: |
+        poetry install --no-interaction --no-ansi
+        poetry add pyinstaller --group dev
+
+    - name: Build binary with PyInstaller
+      run: |
+        # Use the spec file for consistent builds
+        poetry run pyinstaller openhands-cli.spec --clean --noconfirm
+        
+        # Rename the binary to include platform and architecture
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          mv dist/openhands.exe dist/openhands-${{ matrix.platform }}-${{ matrix.arch }}.exe
+        else
+          mv dist/openhands dist/openhands-${{ matrix.platform }}-${{ matrix.arch }}
+          chmod +x dist/openhands-${{ matrix.platform }}-${{ matrix.arch }}
+        fi
+      shell: bash
+
+    - name: Test binary (Unix)
+      if: matrix.platform != 'windows'
+      run: |
+        ./dist/openhands-${{ matrix.platform }}-${{ matrix.arch }} --version
+      shell: bash
+
+    - name: Test binary (Windows)
+      if: matrix.platform == 'windows'
+      run: |
+        ./dist/openhands-${{ matrix.platform }}-${{ matrix.arch }}.exe --version
+      shell: bash
+
+    - name: Compress binary (Unix)
+      if: matrix.platform != 'windows'
+      run: |
+        cd dist
+        tar -czf openhands-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz openhands-${{ matrix.platform }}-${{ matrix.arch }}
+      shell: bash
+
+    - name: Compress binary (Windows)
+      if: matrix.platform == 'windows'
+      run: |
+        cd dist
+        7z a -tzip openhands-${{ matrix.platform }}-${{ matrix.arch }}.zip openhands-${{ matrix.platform }}-${{ matrix.arch }}.exe
+      shell: bash
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: openhands-${{ matrix.platform }}-${{ matrix.arch }}
+        path: |
+          dist/*.tar.gz
+          dist/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name || github.event.inputs.version }}
+        release_name: OpenHands CLI ${{ github.ref_name || github.event.inputs.version }}
+        body: |
+          ## OpenHands CLI Binary Release
+          
+          This release includes pre-built binaries for:
+          - **Linux** (x86_64)
+          - **macOS** (x86_64 and ARM64)
+          - **Windows** (x86_64)
+          
+          ### Installation
+          
+          1. Download the appropriate binary for your platform
+          2. Extract the archive
+          3. Make the binary executable (Unix systems): `chmod +x openhands-*`
+          4. Move to your PATH or run directly
+          
+          ### Usage
+          
+          ```bash
+          openhands --help
+          ```
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Assets
+      run: |
+        for file in artifacts/*/*; do
+          echo "Uploading $file"
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"$file" \
+            "${{ steps.create_release.outputs.upload_url }}?name=$(basename $file)"
+        done
