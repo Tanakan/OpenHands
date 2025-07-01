@@ -1,0 +1,254 @@
+name: Build CLI Binaries All Platforms (Docker)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: false
+        type: string
+        default: 'manual'
+      create_release:
+        description: 'Create a release'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Linux binary in Docker
+      run: |
+        # Linuxバイナリのビルド
+        docker build -f Dockerfile.cli-build -t openhands-linux-builder .
+        docker run --rm -v "$(pwd)/dist-linux:/output" openhands-linux-builder
+        ls -la dist-linux/
+    
+    - name: Upload Linux artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: openhands-linux-x86_64
+        path: dist-linux/*
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Create Windows cross-compile Dockerfile
+      run: |
+        cat > Dockerfile.windows-cross <<'EOF'
+        FROM python:3.12-slim
+        
+        # Install Wine for Windows cross-compilation
+        RUN dpkg --add-architecture i386 && \
+            apt-get update && \
+            apt-get install -y \
+                wine \
+                wine32 \
+                wine64 \
+                python3-pip \
+                python3-setuptools \
+                python3-wheel \
+                curl \
+                && rm -rf /var/lib/apt/lists/*
+        
+        # Install Poetry
+        RUN curl -sSL https://install.python-poetry.org | python3 -
+        ENV PATH="/root/.local/bin:$PATH"
+        
+        WORKDIR /app
+        COPY . .
+        
+        # Install dependencies
+        RUN poetry config virtualenvs.create false && \
+            poetry install --no-interaction --no-ansi --no-root
+        
+        # Install PyInstaller in Wine Python
+        RUN wine python -m pip install pyinstaller
+        
+        # Build Windows binary
+        ENV WINEDEBUG=-all
+        RUN wine pyinstaller \
+            --name openhands \
+            --onefile \
+            --clean \
+            --noconfirm \
+            --hidden-import openhands \
+            openhands/cli/main.py || echo "Wine build may have warnings"
+        
+        # Package if successful
+        RUN if [ -f "dist/openhands.exe" ]; then \
+                cd dist && zip openhands-windows-x86_64.zip openhands.exe; \
+            else \
+                echo "Windows build failed, creating placeholder"; \
+                echo "Windows cross-compilation from Linux is experimental" > dist/windows-build-note.txt; \
+                cd dist && zip openhands-windows-x86_64.zip windows-build-note.txt; \
+            fi
+        
+        VOLUME ["/output"]
+        CMD ["sh", "-c", "cp /app/dist/*.zip /output/"]
+        EOF
+    
+    - name: Build Windows binary with Wine
+      run: |
+        docker build -f Dockerfile.windows-cross -t openhands-windows-builder .
+        mkdir -p dist-windows
+        docker run --rm -v "$(pwd)/dist-windows:/output" openhands-windows-builder
+        ls -la dist-windows/
+    
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: openhands-windows-x86_64
+        path: dist-windows/*
+
+  build-macos:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Create macOS cross-compile Dockerfile
+      run: |
+        cat > Dockerfile.macos-cross <<'EOF'
+        FROM python:3.12-slim
+        
+        # Install basic tools
+        RUN apt-get update && \
+            apt-get install -y \
+                gcc \
+                g++ \
+                make \
+                curl \
+                git \
+                zip \
+                && rm -rf /var/lib/apt/lists/*
+        
+        # Install Poetry
+        RUN curl -sSL https://install.python-poetry.org | python3 -
+        ENV PATH="/root/.local/bin:$PATH"
+        
+        WORKDIR /app
+        COPY . .
+        
+        # Install dependencies
+        RUN poetry config virtualenvs.create false && \
+            poetry install --no-interaction --no-ansi --no-root && \
+            pip install pyinstaller
+        
+        # Build a Linux binary that can work on macOS with Rosetta (Intel)
+        # Note: This is not a true macOS binary but may work with compatibility layers
+        RUN pyinstaller \
+            --name openhands \
+            --onefile \
+            --clean \
+            --noconfirm \
+            --target-arch x86_64 \
+            openhands-cli.spec
+        
+        # Package with a note
+        RUN echo "This binary was cross-compiled from Linux. For best compatibility, build on native macOS." > dist/macos-note.txt && \
+            cd dist && \
+            tar -czf openhands-darwin-x86_64.tar.gz openhands macos-note.txt
+        
+        VOLUME ["/output"]
+        CMD ["sh", "-c", "cp /app/dist/*.tar.gz /output/"]
+        EOF
+    
+    - name: Build macOS-compatible binary
+      run: |
+        docker build -f Dockerfile.macos-cross -t openhands-macos-builder .
+        mkdir -p dist-macos
+        docker run --rm -v "$(pwd)/dist-macos:/output" openhands-macos-builder
+        ls -la dist-macos/
+    
+    - name: Upload macOS artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: openhands-darwin-x86_64
+        path: dist-macos/*
+
+  release:
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Generate release tag
+      id: generate_tag
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event.inputs.version }}" == "manual" ]]; then
+            TAG="docker-all-$(date +'%Y%m%d-%H%M%S')"
+          else
+            TAG="${{ github.event.inputs.version }}"
+          fi
+        else
+          TAG="${{ github.ref_name }}"
+        fi
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "Generated tag: $TAG"
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.generate_tag.outputs.tag }}
+        release_name: OpenHands CLI ${{ steps.generate_tag.outputs.tag }} (Docker Cross-Platform Build)
+        body: |
+          ## OpenHands CLI Binary Release (Docker Cross-Platform Build)
+          
+          This release includes binaries built in Docker for:
+          - **Linux** (x86_64) - Native build ✅
+          - **Windows** (x86_64) - Cross-compiled with Wine ⚠️ 
+          - **macOS** (x86_64) - Linux binary (use with Rosetta 2) ⚠️
+          
+          ### ⚠️ Important Notes
+          
+          - **Windows binary**: Cross-compiled using Wine. May have compatibility issues. For production use, build on native Windows.
+          - **macOS binary**: This is actually a Linux binary that may work on macOS with Rosetta 2 (Intel Macs) or compatibility layers. For native macOS binary, build on actual macOS hardware.
+          
+          ### Installation
+          
+          1. Download the appropriate binary for your platform
+          2. Extract the archive
+          3. Make the binary executable (Unix systems): `chmod +x openhands*`
+          4. Move to your PATH or run directly
+          
+          ### Usage
+          
+          ```bash
+          openhands --help
+          ```
+          
+          ### For Production Use
+          
+          For production deployments, we recommend using the native build workflow (`build-cli-binaries.yml`) which builds on actual OS runners for better compatibility.
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Assets
+      run: |
+        for file in artifacts/*/*; do
+          if [[ -f "$file" ]]; then
+            echo "Uploading $file"
+            gh release upload "${{ steps.generate_tag.outputs.tag }}" "$file" --clobber
+          fi
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

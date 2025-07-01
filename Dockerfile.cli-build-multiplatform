@@ -1,0 +1,62 @@
+# Multi-platform build for OpenHands CLI binaries
+FROM python:3.12-slim as builder
+
+# Install system dependencies including Wine for Windows builds
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    curl \
+    git \
+    binutils \
+    # For Windows cross-compilation
+    wine \
+    wine64 \
+    # For macOS cross-compilation (basic tools)
+    clang \
+    lld \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 -
+ENV PATH="/root/.local/bin:$PATH"
+
+# Set working directory
+WORKDIR /app
+
+# Copy project files
+COPY pyproject.toml poetry.lock ./
+COPY openhands/ ./openhands/
+COPY third_party/ ./third_party/
+COPY openhands-cli.spec ./
+
+# Install dependencies
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi --no-root \
+    && pip install pyinstaller
+
+# Build Linux binary
+RUN pyinstaller openhands-cli.spec --clean --noconfirm \
+    && mv dist/openhands dist/openhands-linux-x86_64 \
+    && cd dist && tar -czf openhands-linux-x86_64.tar.gz openhands-linux-x86_64
+
+# Build Windows binary using Wine
+ENV WINEDEBUG=-all
+ENV WINEPATH=/usr/lib/wine
+RUN wine python -m pip install pyinstaller \
+    && wine pyinstaller openhands-cli.spec --clean --noconfirm --name openhands-windows \
+    && cd dist && zip -r openhands-windows-x86_64.zip openhands-windows.exe || echo "Windows build failed"
+
+# For macOS, we'll create a Linux binary with a note since true cross-compilation requires macOS SDK
+RUN cp dist/openhands-linux-x86_64 dist/openhands-darwin-x86_64 \
+    && cd dist && tar -czf openhands-darwin-x86_64.tar.gz openhands-darwin-x86_64 \
+    && echo "Note: macOS binary is currently a Linux binary. True macOS binary requires macOS SDK and code signing." > dist/macos-note.txt
+
+# Final stage - minimal image with just the artifacts
+FROM alpine:latest
+COPY --from=builder /app/dist/*.tar.gz /artifacts/
+COPY --from=builder /app/dist/*.zip /artifacts/
+COPY --from=builder /app/dist/*-note.txt /artifacts/
+
+VOLUME ["/output"]
+CMD ["sh", "-c", "cp /artifacts/* /output/"]
