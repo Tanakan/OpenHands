@@ -45,8 +45,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        # Install dependencies without development packages
-        poetry install --no-interaction --no-ansi --without evaluation,test
+        # Install all dependencies (simpler approach)
+        poetry install --no-interaction --no-ansi
         
         # Install PyInstaller explicitly
         poetry run pip install pyinstaller
