@@ -47,7 +47,9 @@ jobs:
       run: |
         # Install dependencies without development packages
         poetry install --no-interaction --no-ansi --without evaluation,test
-        poetry add pyinstaller --group dev
+        
+        # Install PyInstaller explicitly
+        poetry run pip install pyinstaller
 
     - name: Build binary with PyInstaller
       run: |

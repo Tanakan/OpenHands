@@ -32,7 +32,13 @@ jobs:
       run: |
         # Install dependencies using existing pyproject.toml
         poetry install --no-interaction --no-ansi
-        poetry add pyinstaller --group dev
+        
+        # Install PyInstaller explicitly
+        poetry run pip install pyinstaller
+        
+        # Debug: Check if pyinstaller is installed
+        poetry run pip list | grep -i pyinstaller || echo "PyInstaller not found in pip list"
+        poetry run which pyinstaller || echo "PyInstaller binary not found"
     
     - name: Test PyInstaller build
       run: |
