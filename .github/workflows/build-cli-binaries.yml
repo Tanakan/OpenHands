@@ -14,6 +14,7 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       matrix:
         include:
@@ -23,9 +24,6 @@ jobs:
           - os: macos-latest
             platform: darwin
             arch: x86_64
-          - os: macos-latest
-            platform: darwin
-            arch: arm64
           - os: windows-latest
             platform: windows
             arch: x86_64
@@ -47,7 +45,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        poetry install --no-interaction --no-ansi
+        # Install dependencies without development packages
+        poetry install --no-interaction --no-ansi --without evaluation,test
         poetry add pyinstaller --group dev
 
     - name: Build binary with PyInstaller
