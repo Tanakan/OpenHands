@@ -173,10 +173,10 @@ jobs:
     - name: Upload Release Assets
       run: |
         for file in artifacts/*/*; do
-          echo "Uploading $file"
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary @"$file" \
-            "${{ steps.create_release.outputs.upload_url }}?name=$(basename $file)"
+          if [[ -f "$file" ]]; then
+            echo "Uploading $file"
+            gh release upload "${{ steps.generate_tag.outputs.tag }}" "$file" --clobber
+          fi
         done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
