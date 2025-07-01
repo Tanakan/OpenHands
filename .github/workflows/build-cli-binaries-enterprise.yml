@@ -1,0 +1,144 @@
+name: Build CLI Binaries (Enterprise Docker)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: false
+        type: string
+        default: 'enterprise'
+
+jobs:
+  build-linux:
+    # Enterprise環境で利用可能な任意のrunnerで動作
+    runs-on: [self-hosted, linux]  # または単に ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker
+      run: |
+        # Docker が利用可能か確認
+        docker version || echo "Docker not available, will try podman"
+        
+    - name: Build in Docker container
+      run: |
+        # Dockerまたは代替のコンテナランタイムでビルド
+        if command -v docker &> /dev/null; then
+          CONTAINER_RUNTIME=docker
+        elif command -v podman &> /dev/null; then
+          CONTAINER_RUNTIME=podman
+        else
+          echo "No container runtime found!"
+          exit 1
+        fi
+        
+        echo "Using container runtime: $CONTAINER_RUNTIME"
+        
+        # ビルド用のDockerfile を作成
+        cat > Dockerfile.build <<'EOF'
+        FROM python:3.12-slim
+        
+        RUN apt-get update && apt-get install -y gcc g++ make curl git && rm -rf /var/lib/apt/lists/*
+        RUN curl -sSL https://install.python-poetry.org | python3 -
+        ENV PATH="/root/.local/bin:$PATH"
+        
+        WORKDIR /app
+        COPY . .
+        
+        RUN poetry install --no-interaction --no-ansi && \
+            poetry run pip install pyinstaller && \
+            poetry run pyinstaller openhands-cli.spec --clean --noconfirm
+        
+        RUN cd dist && tar -czf openhands-linux-x86_64.tar.gz openhands
+        EOF
+        
+        # コンテナでビルド
+        $CONTAINER_RUNTIME build -f Dockerfile.build -t openhands-build .
+        
+        # アーティファクトを抽出
+        $CONTAINER_RUNTIME create --name extract openhands-build
+        $CONTAINER_RUNTIME cp extract:/app/dist/openhands-linux-x86_64.tar.gz ./
+        $CONTAINER_RUNTIME rm extract
+        
+        # クリーンアップ
+        rm Dockerfile.build
+        
+    - name: Upload Linux artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: openhands-linux-x86_64
+        path: openhands-linux-x86_64.tar.gz
+
+  build-windows-wsl:
+    # Windows上でWSL2を使ってLinuxバイナリをビルド（代替案）
+    runs-on: [self-hosted, windows]  # または windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Windows binary with Python
+      shell: pwsh
+      run: |
+        # PowerShellでPythonをセットアップ
+        $pythonVersion = "3.12"
+        
+        # Python がインストールされているか確認
+        try {
+          python --version
+        } catch {
+          Write-Host "Python not found, please install Python $pythonVersion"
+          exit 1
+        }
+        
+        # Poetry をインストール
+        (Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
+        $env:Path += ";$env:APPDATA\Python\Scripts"
+        
+        # 依存関係をインストール
+        poetry install --no-interaction --no-ansi
+        poetry run pip install pyinstaller
+        
+        # バイナリをビルド
+        poetry run pyinstaller openhands-cli.spec --clean --noconfirm
+        
+        # 圧縮
+        Compress-Archive -Path dist\openhands.exe -DestinationPath openhands-windows-x86_64.zip
+    
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: openhands-windows-x86_64
+        path: openhands-windows-x86_64.zip
+
+  create-release:
+    needs: [build-linux, build-windows-wsl]
+    runs-on: [self-hosted, linux]  # または ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    
+    - name: Generate release tag
+      id: generate_tag
+      run: |
+        TAG="${{ github.event.inputs.version }}-$(date +'%Y%m%d-%H%M%S')"
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+    
+    - name: Create Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # GitHub CLI を使ってリリースを作成
+        TAG="${{ steps.generate_tag.outputs.tag }}"
+        
+        gh release create "$TAG" \
+          --title "OpenHands CLI $TAG (Enterprise Build)" \
+          --notes "Binary release built in Docker containers on enterprise infrastructure" \
+          artifacts/*/*.tar.gz \
+          artifacts/*/*.zip

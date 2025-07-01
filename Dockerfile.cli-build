@@ -1,0 +1,48 @@
+# Multi-stage build for OpenHands CLI binaries
+FROM python:3.12-slim as builder
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    make \
+    curl \
+    git \
+    binutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 -
+ENV PATH="/root/.local/bin:$PATH"
+
+# Set working directory
+WORKDIR /app
+
+# Copy project files
+COPY pyproject.toml poetry.lock ./
+COPY openhands/ ./openhands/
+COPY third_party/ ./third_party/
+COPY openhands-cli.spec ./
+
+# Install dependencies
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi \
+    && pip install pyinstaller
+
+# Build the binary
+RUN pyinstaller openhands-cli.spec --clean --noconfirm
+
+# Create tarball
+RUN cd dist && tar -czf /app/openhands-linux-x86_64.tar.gz openhands
+
+# Final stage - minimal image with just the artifacts
+FROM alpine:latest
+COPY --from=builder /app/openhands-linux-x86_64.tar.gz /artifacts/
+COPY --from=builder /app/dist/openhands /artifacts/
+
+# Add metadata
+LABEL maintainer="OpenHands"
+LABEL description="OpenHands CLI binary build artifacts"
+
+VOLUME ["/output"]
+CMD ["sh", "-c", "cp /artifacts/* /output/"]
