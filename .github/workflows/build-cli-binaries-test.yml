@@ -30,29 +30,23 @@ jobs:
     
     - name: Install minimal dependencies
       run: |
-        # Create a minimal pyproject.toml for testing
-        poetry init --no-interaction --name openhands-cli-test --python "^3.11"
-        poetry add pyinstaller
-        
-        # Install core OpenHands dependencies manually
-        pip install aiohttp litellm docker pydantic toml rich prompt_toolkit
+        # Install dependencies using existing pyproject.toml
+        poetry install --no-interaction --no-ansi
+        poetry add pyinstaller --group dev
     
     - name: Test PyInstaller build
       run: |
-        # Simple test build
-        pyinstaller \
-          --name openhands-test \
-          --onefile \
-          --clean \
-          --noconfirm \
-          --hidden-import openhands \
-          openhands/cli/main.py
+        # Build using the spec file
+        poetry run pyinstaller openhands-cli.spec --clean --noconfirm
         
         # Check if binary was created
         ls -la dist/
         
+        # Test the binary
+        ./dist/openhands --version || echo "Binary test failed"
+        
     - name: Upload test artifact
       uses: actions/upload-artifact@v4
       with:
-        name: test-binary
-        path: dist/openhands-test
+        name: test-binary-linux
+        path: dist/openhands
