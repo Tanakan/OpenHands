@@ -26,107 +26,14 @@ jobs:
           - platform: linux
             arch: x86_64
             dockerfile: Dockerfile.build-linux
-          - platform: windows
-            arch: x86_64
-            dockerfile: Dockerfile.build-windows
-          - platform: darwin
-            arch: x86_64
-            dockerfile: Dockerfile.build-darwin
 
     steps:
     - uses: actions/checkout@v4
 
-    - name: Create Dockerfile for ${{ matrix.platform }}
+    - name: Use existing Dockerfile
       run: |
-        if [ "${{ matrix.platform }}" = "linux" ]; then
-          cat > ${{ matrix.dockerfile }} <<'EOF'
-        FROM python:3.12-slim
-        
-        # Install system dependencies
-        RUN apt-get update && apt-get install -y \
-            gcc \
-            g++ \
-            make \
-            curl \
-            git \
-            && rm -rf /var/lib/apt/lists/*
-        
-        # Install Poetry
-        RUN curl -sSL https://install.python-poetry.org | python3 -
-        ENV PATH="/root/.local/bin:$PATH"
-        
-        WORKDIR /app
-        COPY . .
-        
-        # Install dependencies
-        RUN poetry install --no-interaction --no-ansi
-        RUN poetry run pip install pyinstaller
-        
-        # Build binary
-        RUN poetry run pyinstaller openhands-cli.spec --clean --noconfirm
-        
-        # Package the binary
-        RUN cd dist && tar -czf openhands-linux-x86_64.tar.gz openhands
-        EOF
-        
-        elif [ "${{ matrix.platform }}" = "windows" ]; then
-          cat > ${{ matrix.dockerfile }} <<'EOF'
-        FROM python:3.12-windowsservercore
-        
-        # Install Poetry
-        RUN powershell -Command \
-            "(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python"
-        ENV PATH="C:\\Users\\ContainerAdministrator\\AppData\\Roaming\\Python\\Scripts;$PATH"
-        
-        WORKDIR /app
-        COPY . .
-        
-        # Install dependencies
-        RUN poetry install --no-interaction --no-ansi
-        RUN poetry run pip install pyinstaller
-        
-        # Build binary
-        RUN poetry run pyinstaller openhands-cli.spec --clean --noconfirm
-        
-        # Package the binary
-        WORKDIR /app/dist
-        RUN powershell -Command "Compress-Archive -Path openhands.exe -DestinationPath openhands-windows-x86_64.zip"
-        EOF
-        
-        elif [ "${{ matrix.platform }}" = "darwin" ]; then
-          # macOS cross-compilation from Linux
-          cat > ${{ matrix.dockerfile }} <<'EOF'
-        FROM python:3.12-slim
-        
-        # Install system dependencies for cross-compilation
-        RUN apt-get update && apt-get install -y \
-            gcc \
-            g++ \
-            make \
-            curl \
-            git \
-            clang \
-            cmake \
-            && rm -rf /var/lib/apt/lists/*
-        
-        # Install osxcross for macOS cross-compilation
-        # Note: This is a simplified version. In practice, you'd need proper macOS SDK
-        RUN echo "macOS cross-compilation requires macOS SDK and is complex to set up"
-        
-        # Install Poetry
-        RUN curl -sSL https://install.python-poetry.org | python3 -
-        ENV PATH="/root/.local/bin:$PATH"
-        
-        WORKDIR /app
-        COPY . .
-        
-        # For now, we'll build a Linux binary and note that macOS requires different approach
-        RUN poetry install --no-interaction --no-ansi
-        RUN poetry run pip install pyinstaller
-        RUN poetry run pyinstaller openhands-cli.spec --clean --noconfirm
-        RUN cd dist && tar -czf openhands-darwin-x86_64.tar.gz openhands
-        EOF
-        fi
+        # Use the pre-created Dockerfile.cli-build for Linux builds
+        cp Dockerfile.cli-build ${{ matrix.dockerfile }}
 
     - name: Build Docker image
       run: |
@@ -134,27 +41,17 @@ jobs:
 
     - name: Extract binary from container
       run: |
-        # Create container and copy artifacts
-        docker create --name extract-${{ matrix.platform }} openhands-build-${{ matrix.platform }}
-        
-        if [ "${{ matrix.platform }}" = "windows" ]; then
-          docker cp extract-${{ matrix.platform }}:/app/dist/openhands-windows-x86_64.zip ./
-        else
-          docker cp extract-${{ matrix.platform }}:/app/dist/openhands-${{ matrix.platform }}-x86_64.tar.gz ./
-        fi
-        
-        docker rm extract-${{ matrix.platform }}
+        # Run container to copy artifacts
+        docker run --rm -v "$(pwd)/dist-docker:/output" openhands-build-${{ matrix.platform }}
         
         # List extracted files
-        ls -la openhands-*
+        ls -la dist-docker/
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: openhands-${{ matrix.platform }}-${{ matrix.arch }}
-        path: |
-          openhands-*.tar.gz
-          openhands-*.zip
+        path: dist-docker/*
 
   release:
     needs: build-in-docker
@@ -196,9 +93,7 @@ jobs:
           ## OpenHands CLI Binary Release (Docker Build)
           
           This release includes pre-built binaries for:
-          - **Linux** (x86_64) - Native build in Docker
-          - **Windows** (x86_64) - Requires Windows containers support
-          - **macOS** (x86_64) - Note: Currently builds Linux binary due to cross-compilation complexity
+          - **Linux** (x86_64) - Built in Docker container
           
           ### Installation
           
