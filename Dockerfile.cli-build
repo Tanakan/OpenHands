@@ -26,7 +26,7 @@ COPY openhands-cli.spec ./
 
 # Install dependencies
 RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-ansi \
+    && poetry install --no-interaction --no-ansi --no-root \
     && pip install pyinstaller
 
 # Build the binary
