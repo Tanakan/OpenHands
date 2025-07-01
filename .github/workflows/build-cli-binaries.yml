@@ -42,6 +42,11 @@ jobs:
         version: latest
         virtualenvs-create: true
         virtualenvs-in-project: true
+    
+    - name: Add Poetry to PATH (Windows)
+      if: matrix.platform == 'windows'
+      run: echo "$HOME\.local\bin" >> $GITHUB_PATH
+      shell: bash
 
     - name: Install dependencies
       run: |
