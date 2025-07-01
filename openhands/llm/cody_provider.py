@@ -5,6 +5,7 @@ This provider handles Cody's specific authentication and API requirements.
 """
 
 import json
+import logging
 import os
 import ssl
 from typing import Any, Callable, Iterator, Optional, Union
@@ -15,6 +16,8 @@ from litellm.llms.custom_llm import CustomLLM, CustomLLMError
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.types.utils import GenericStreamingChunk
 from litellm.utils import ModelResponse
+
+logger = logging.getLogger(__name__)
 
 
 class CodyLLM(CustomLLM):
@@ -53,8 +56,6 @@ class CodyLLM(CustomLLM):
             model = model[5:]
         
         # Debug logging
-        import logging
-        logger = logging.getLogger(__name__)
         logger.debug(f'[CodyLLM._prepare_request] api_base parameter: {api_base!r}')
         
         # Ensure API base has the correct path
@@ -77,14 +78,29 @@ class CodyLLM(CustomLLM):
         # Convert system messages to user messages with a prefix
         filtered_messages = []
         for msg in messages:
+            # Skip messages with empty or missing content
+            content = msg.get('content', '')
+            # Also skip messages that only contain whitespace
+            if not content or not content.strip():
+                logger.warning(f"Skipping message with empty or whitespace-only content: {msg}")
+                continue
+                
             if msg.get('role') == 'system':
                 # Convert system message to user message with prefix
                 filtered_messages.append({
                     'role': 'user',
-                    'content': f"[System instruction: {msg['content']}]"
+                    'content': f"[System instruction: {content}]"
                 })
             else:
-                filtered_messages.append(msg)
+                # Ensure the message has content before adding
+                filtered_messages.append({
+                    'role': msg.get('role', 'user'),
+                    'content': content
+                })
+        
+        # Ensure we have at least one message after filtering
+        if not filtered_messages:
+            raise ValueError("No valid messages with content after filtering. All messages had empty content.")
         
         # Prepare request data
         data = {
@@ -124,8 +140,6 @@ class CodyLLM(CustomLLM):
         """Make a completion request to Cody API."""
         
         # Debug logging for incoming parameters
-        import logging
-        logger = logging.getLogger(__name__)
         logger.debug(f'[CodyLLM] completion called with:')
         logger.debug(f'[CodyLLM]   model: {model}')
         logger.debug(f'[CodyLLM]   api_base: {api_base!r}')
