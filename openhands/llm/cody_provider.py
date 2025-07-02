@@ -143,6 +143,7 @@ class CodyLLM(CustomLLM):
         
         # Check if continuation is enabled (default: True)
         if not optional_params.get('auto_continue', True):
+            logger.debug("Auto-continuation is disabled")
             return None
             
         # Limit continuation attempts to prevent infinite loops
@@ -171,6 +172,7 @@ class CodyLLM(CustomLLM):
         continuation_params = optional_params.copy()
         continuation_params['_continuation_count'] = current_continuation + 1
         
+        logger.info(f"Requesting continuation (attempt {current_continuation + 1}/{max_continuations})")
         if print_verbose:
             print_verbose(f"Requesting continuation (attempt {current_continuation + 1}/{max_continuations})")
         
@@ -255,13 +257,6 @@ class CodyLLM(CustomLLM):
             for idx, choice in enumerate(response_json.get('choices', [])):
                 finish_reason = choice.get('finish_reason', 'stop')
                 
-                # Log warning if response was truncated
-                if finish_reason == 'length':
-                    logger.warning(
-                        f"Response truncated due to max_tokens limit for model {model}. "
-                        f"Consider increasing max_tokens parameter."
-                    )
-                
                 choice_obj = Choices(
                     index=choice.get('index', idx),
                     message=Message(**choice.get('message', {})),
@@ -278,6 +273,7 @@ class CodyLLM(CustomLLM):
 
             # Handle continuation if response was truncated
             if choices and choices[0].finish_reason == 'length':
+                logger.debug(f"Response truncated with finish_reason='length'. Attempting continuation...")
                 continuation_info = self._handle_continuation(
                     model=model,
                     messages=messages,
@@ -292,6 +288,7 @@ class CodyLLM(CustomLLM):
                 )
                 
                 if continuation_info:
+                    logger.debug("Continuation info prepared, making request...")
                     # Make continuation request
                     cont_response = client.post(
                         url=continuation_info['url'],
@@ -309,6 +306,13 @@ class CodyLLM(CustomLLM):
                             cont_content = choice.get('message', {}).get('content', '')
                             choices[idx].message.content = original_content + cont_content
                             choices[idx].finish_reason = choice.get('finish_reason', 'stop')
+                            
+                            # Log continuation success
+                            cont_finish = choice.get('finish_reason', 'stop')
+                            logger.info(
+                                f"Continuation successful. Added {len(cont_content)} chars. "
+                                f"New finish_reason: {cont_finish}"
+                            )
                             
                             # Update usage stats
                             if 'usage' in cont_response_json:
@@ -425,13 +429,6 @@ class CodyLLM(CustomLLM):
             for idx, choice in enumerate(response_json.get('choices', [])):
                 finish_reason = choice.get('finish_reason', 'stop')
                 
-                # Log warning if response was truncated
-                if finish_reason == 'length':
-                    logger.warning(
-                        f"Response truncated due to max_tokens limit for model {model}. "
-                        f"Consider increasing max_tokens parameter."
-                    )
-                
                 choice_obj = Choices(
                     index=choice.get('index', idx),
                     message=Message(**choice.get('message', {})),
@@ -448,6 +445,7 @@ class CodyLLM(CustomLLM):
 
             # Handle continuation if response was truncated
             if choices and choices[0].finish_reason == 'length':
+                logger.debug(f"Response truncated with finish_reason='length'. Attempting continuation...")
                 continuation_info = self._handle_continuation(
                     model=model,
                     messages=messages,
@@ -462,6 +460,7 @@ class CodyLLM(CustomLLM):
                 )
                 
                 if continuation_info:
+                    logger.debug("Continuation info prepared, making request...")
                     # Make continuation request
                     cont_response = client.post(
                         url=continuation_info['url'],
@@ -479,6 +478,13 @@ class CodyLLM(CustomLLM):
                             cont_content = choice.get('message', {}).get('content', '')
                             choices[idx].message.content = original_content + cont_content
                             choices[idx].finish_reason = choice.get('finish_reason', 'stop')
+                            
+                            # Log continuation success
+                            cont_finish = choice.get('finish_reason', 'stop')
+                            logger.info(
+                                f"Continuation successful. Added {len(cont_content)} chars. "
+                                f"New finish_reason: {cont_finish}"
+                            )
                             
                             # Update usage stats
                             if 'usage' in cont_response_json:
