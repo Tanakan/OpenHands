@@ -193,6 +193,15 @@ class CodyLLM(CustomLLM):
                 
                 # Create message with proper handling of tool_calls
                 message_data = choice.get('message', {})
+                
+                # Debug logging for tool_calls
+                if 'tool_calls' in message_data:
+                    logger.debug(f"Raw tool_calls in response: {message_data['tool_calls']}")
+                    # Check if tool_calls look incomplete (common patterns)
+                    tool_calls_str = str(message_data['tool_calls'])
+                    if tool_calls_str.endswith(('"', '{', '[', ',')) and finish_reason == 'length':
+                        logger.warning("tool_calls appear to be truncated")
+                
                 choice_obj = Choices(
                     index=choice.get('index', idx),
                     message=Message(**message_data),
@@ -240,7 +249,16 @@ class CodyLLM(CustomLLM):
                     })
                     
                     # Choose appropriate continuation prompt
-                    if accumulated_content.strip().startswith('{') or any('tool' in str(msg) for msg in messages[-3:]):
+                    has_tool_calls = hasattr(choices[0].message, 'tool_calls') and choices[0].message.tool_calls
+                    content_looks_like_json = accumulated_content and (
+                        accumulated_content.strip().startswith('{') or 
+                        accumulated_content.strip().startswith('[') or
+                        '"function"' in accumulated_content or
+                        '"tool_calls"' in accumulated_content
+                    )
+                    
+                    if has_tool_calls or content_looks_like_json or any('tool' in str(msg) for msg in messages[-3:]):
+                        logger.debug(f"Using JSON continuation prompt (has_tool_calls={has_tool_calls}, content_looks_like_json={content_looks_like_json})")
                         continuation_messages.append({
                             "role": "user",
                             "content": "Your previous response was cut off. Please continue from exactly where you left off to complete the function call JSON. Do not repeat what was already said, just continue from the exact character where it was cut."
@@ -434,6 +452,15 @@ class CodyLLM(CustomLLM):
                 
                 # Create message with proper handling of tool_calls
                 message_data = choice.get('message', {})
+                
+                # Debug logging for tool_calls
+                if 'tool_calls' in message_data:
+                    logger.debug(f"Raw tool_calls in response: {message_data['tool_calls']}")
+                    # Check if tool_calls look incomplete (common patterns)
+                    tool_calls_str = str(message_data['tool_calls'])
+                    if tool_calls_str.endswith(('"', '{', '[', ',')) and finish_reason == 'length':
+                        logger.warning("tool_calls appear to be truncated")
+                
                 choice_obj = Choices(
                     index=choice.get('index', idx),
                     message=Message(**message_data),
@@ -481,7 +508,16 @@ class CodyLLM(CustomLLM):
                     })
                     
                     # Choose appropriate continuation prompt
-                    if accumulated_content.strip().startswith('{') or any('tool' in str(msg) for msg in messages[-3:]):
+                    has_tool_calls = hasattr(choices[0].message, 'tool_calls') and choices[0].message.tool_calls
+                    content_looks_like_json = accumulated_content and (
+                        accumulated_content.strip().startswith('{') or 
+                        accumulated_content.strip().startswith('[') or
+                        '"function"' in accumulated_content or
+                        '"tool_calls"' in accumulated_content
+                    )
+                    
+                    if has_tool_calls or content_looks_like_json or any('tool' in str(msg) for msg in messages[-3:]):
+                        logger.debug(f"Using JSON continuation prompt (has_tool_calls={has_tool_calls}, content_looks_like_json={content_looks_like_json})")
                         continuation_messages.append({
                             "role": "user",
                             "content": "Your previous response was cut off. Please continue from exactly where you left off to complete the function call JSON. Do not repeat what was already said, just continue from the exact character where it was cut."
