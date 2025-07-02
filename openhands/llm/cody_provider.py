@@ -111,10 +111,13 @@ class CodyLLM(CustomLLM):
         }
 
         # Add max_tokens if present (check both max_tokens and max_completion_tokens)
+        # Default to 1024 if not specified
         if 'max_tokens' in optional_params:
             data['max_tokens'] = optional_params['max_tokens']
         elif 'max_completion_tokens' in optional_params:
             data['max_tokens'] = optional_params['max_completion_tokens']
+        else:
+            data['max_tokens'] = 1024
         
         # Add optional parameters if present
         for key in ['stream', 'stop', 'n', 'presence_penalty', 'frequency_penalty']:
