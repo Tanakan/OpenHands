@@ -163,10 +163,20 @@ class CodyLLM(CustomLLM):
             "role": "assistant",
             "content": truncated_response
         })
-        continuation_messages.append({
-            "role": "user", 
-            "content": "Continue from where you left off."
-        })
+        # Check if the truncated response looks like incomplete function call
+        # Note: In modern OpenAI format, function calls are in message.tool_calls, not in content
+        if (truncated_response and truncated_response.strip().startswith('{')) or any('tool' in str(msg) for msg in messages[-3:]):
+            # For incomplete function calls, ask to complete the JSON
+            continuation_messages.append({
+                "role": "user", 
+                "content": "Your previous response was cut off. Please continue from exactly where you left off to complete the function call JSON. Do not repeat what was already said, just continue from the exact character where it was cut."
+            })
+        else:
+            # For regular text, use simple continuation
+            continuation_messages.append({
+                "role": "user", 
+                "content": "Continue from where you left off."
+            })
         
         # Update optional params for continuation
         continuation_params = optional_params.copy()
@@ -257,11 +267,20 @@ class CodyLLM(CustomLLM):
             for idx, choice in enumerate(response_json.get('choices', [])):
                 finish_reason = choice.get('finish_reason', 'stop')
                 
+                # Create message with proper handling of tool_calls
+                message_data = choice.get('message', {})
                 choice_obj = Choices(
                     index=choice.get('index', idx),
-                    message=Message(**choice.get('message', {})),
+                    message=Message(**message_data),
                     finish_reason=finish_reason
                 )
+                
+                # If tool_calls are present, they should be in the message
+                if 'tool_calls' in message_data and finish_reason == 'length':
+                    logger.warning(
+                        "Tool calls were truncated due to max_tokens limit. "
+                        "This may cause parsing errors."
+                    )
                 choices.append(choice_obj)
 
             model_response.choices = choices
@@ -429,11 +448,20 @@ class CodyLLM(CustomLLM):
             for idx, choice in enumerate(response_json.get('choices', [])):
                 finish_reason = choice.get('finish_reason', 'stop')
                 
+                # Create message with proper handling of tool_calls
+                message_data = choice.get('message', {})
                 choice_obj = Choices(
                     index=choice.get('index', idx),
-                    message=Message(**choice.get('message', {})),
+                    message=Message(**message_data),
                     finish_reason=finish_reason
                 )
+                
+                # If tool_calls are present, they should be in the message
+                if 'tool_calls' in message_data and finish_reason == 'length':
+                    logger.warning(
+                        "Tool calls were truncated due to max_tokens limit. "
+                        "This may cause parsing errors."
+                    )
                 choices.append(choice_obj)
 
             model_response.choices = choices
