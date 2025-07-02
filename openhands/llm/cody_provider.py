@@ -110,12 +110,83 @@ class CodyLLM(CustomLLM):
             'top_p': optional_params.get('top_p', 1.0),
         }
 
+        # Add max_tokens if present (check both max_tokens and max_completion_tokens)
+        if 'max_tokens' in optional_params:
+            data['max_tokens'] = optional_params['max_tokens']
+        elif 'max_completion_tokens' in optional_params:
+            data['max_tokens'] = optional_params['max_completion_tokens']
+        
         # Add optional parameters if present
         for key in ['stream', 'stop', 'n', 'presence_penalty', 'frequency_penalty']:
             if key in optional_params:
                 data[key] = optional_params[key]
 
         return url, headers, data
+
+    def _handle_continuation(
+        self,
+        model: str,
+        messages: list,
+        api_base: str,
+        api_key: str,
+        optional_params: dict,
+        truncated_response: str,
+        client: Union[HTTPHandler, AsyncHTTPHandler],
+        headers: dict,
+        print_verbose: Optional[Callable] = None,
+        is_async: bool = False,
+    ) -> Optional[dict]:
+        """Handle continuation request when response is truncated."""
+        
+        # Check if continuation is enabled (default: True)
+        if not optional_params.get('auto_continue', True):
+            return None
+            
+        # Limit continuation attempts to prevent infinite loops
+        max_continuations = optional_params.get('max_continuations', 3)
+        current_continuation = optional_params.get('_continuation_count', 0)
+        
+        if current_continuation >= max_continuations:
+            logger.warning(
+                f"Reached maximum continuation attempts ({max_continuations}). "
+                f"Response may still be incomplete."
+            )
+            return None
+        
+        # Prepare continuation messages
+        continuation_messages = messages.copy()
+        continuation_messages.append({
+            "role": "assistant",
+            "content": truncated_response
+        })
+        continuation_messages.append({
+            "role": "user", 
+            "content": "Continue from where you left off."
+        })
+        
+        # Update optional params for continuation
+        continuation_params = optional_params.copy()
+        continuation_params['_continuation_count'] = current_continuation + 1
+        
+        if print_verbose:
+            print_verbose(f"Requesting continuation (attempt {current_continuation + 1}/{max_continuations})")
+        
+        # Prepare continuation request
+        url, request_headers, data = self._prepare_request(
+            model, continuation_messages, api_base, api_key, continuation_params
+        )
+        
+        # Merge headers
+        if headers:
+            request_headers.update(headers)
+        
+        return {
+            'url': url,
+            'data': data,
+            'headers': request_headers,
+            'messages': continuation_messages,
+            'params': continuation_params
+        }
 
     def completion(
         self,
@@ -179,10 +250,19 @@ class CodyLLM(CustomLLM):
 
             choices = []
             for idx, choice in enumerate(response_json.get('choices', [])):
+                finish_reason = choice.get('finish_reason', 'stop')
+                
+                # Log warning if response was truncated
+                if finish_reason == 'length':
+                    logger.warning(
+                        f"Response truncated due to max_tokens limit for model {model}. "
+                        f"Consider increasing max_tokens parameter."
+                    )
+                
                 choice_obj = Choices(
                     index=choice.get('index', idx),
                     message=Message(**choice.get('message', {})),
-                    finish_reason=choice.get('finish_reason', 'stop')
+                    finish_reason=finish_reason
                 )
                 choices.append(choice_obj)
 
@@ -192,6 +272,48 @@ class CodyLLM(CustomLLM):
             model_response.usage = response_json.get('usage', {})
             model_response.created = response_json.get('created', 0)
             model_response.object = response_json.get('object', 'chat.completion')
+
+            # Handle continuation if response was truncated
+            if choices and choices[0].finish_reason == 'length':
+                continuation_info = self._handle_continuation(
+                    model=model,
+                    messages=messages,
+                    api_base=api_base,
+                    api_key=api_key,
+                    optional_params=optional_params,
+                    truncated_response=choices[0].message.content,
+                    client=client,
+                    headers=headers,
+                    print_verbose=print_verbose,
+                    is_async=False
+                )
+                
+                if continuation_info:
+                    # Make continuation request
+                    cont_response = client.post(
+                        url=continuation_info['url'],
+                        json=continuation_info['data'],
+                        headers=continuation_info['headers'],
+                    )
+                    cont_response.raise_for_status()
+                    cont_response_json = cont_response.json()
+                    
+                    # Process continuation response
+                    for idx, choice in enumerate(cont_response_json.get('choices', [])):
+                        if idx < len(choices):
+                            # Append content to existing choice
+                            original_content = choices[idx].message.content
+                            cont_content = choice.get('message', {}).get('content', '')
+                            choices[idx].message.content = original_content + cont_content
+                            choices[idx].finish_reason = choice.get('finish_reason', 'stop')
+                            
+                            # Update usage stats
+                            if 'usage' in cont_response_json:
+                                if hasattr(model_response, 'usage') and model_response.usage:
+                                    # Add continuation tokens to total
+                                    for key in ['prompt_tokens', 'completion_tokens', 'total_tokens']:
+                                        if key in model_response.usage and key in cont_response_json['usage']:
+                                            model_response.usage[key] += cont_response_json['usage'][key]
 
             return model_response
 
@@ -298,10 +420,19 @@ class CodyLLM(CustomLLM):
 
             choices = []
             for idx, choice in enumerate(response_json.get('choices', [])):
+                finish_reason = choice.get('finish_reason', 'stop')
+                
+                # Log warning if response was truncated
+                if finish_reason == 'length':
+                    logger.warning(
+                        f"Response truncated due to max_tokens limit for model {model}. "
+                        f"Consider increasing max_tokens parameter."
+                    )
+                
                 choice_obj = Choices(
                     index=choice.get('index', idx),
                     message=Message(**choice.get('message', {})),
-                    finish_reason=choice.get('finish_reason', 'stop')
+                    finish_reason=finish_reason
                 )
                 choices.append(choice_obj)
 
@@ -311,6 +442,48 @@ class CodyLLM(CustomLLM):
             model_response.usage = response_json.get('usage', {})
             model_response.created = response_json.get('created', 0)
             model_response.object = response_json.get('object', 'chat.completion')
+
+            # Handle continuation if response was truncated
+            if choices and choices[0].finish_reason == 'length':
+                continuation_info = self._handle_continuation(
+                    model=model,
+                    messages=messages,
+                    api_base=api_base,
+                    api_key=api_key,
+                    optional_params=optional_params,
+                    truncated_response=choices[0].message.content,
+                    client=client,
+                    headers=headers,
+                    print_verbose=print_verbose,
+                    is_async=False
+                )
+                
+                if continuation_info:
+                    # Make continuation request
+                    cont_response = client.post(
+                        url=continuation_info['url'],
+                        json=continuation_info['data'],
+                        headers=continuation_info['headers'],
+                    )
+                    cont_response.raise_for_status()
+                    cont_response_json = cont_response.json()
+                    
+                    # Process continuation response
+                    for idx, choice in enumerate(cont_response_json.get('choices', [])):
+                        if idx < len(choices):
+                            # Append content to existing choice
+                            original_content = choices[idx].message.content
+                            cont_content = choice.get('message', {}).get('content', '')
+                            choices[idx].message.content = original_content + cont_content
+                            choices[idx].finish_reason = choice.get('finish_reason', 'stop')
+                            
+                            # Update usage stats
+                            if 'usage' in cont_response_json:
+                                if hasattr(model_response, 'usage') and model_response.usage:
+                                    # Add continuation tokens to total
+                                    for key in ['prompt_tokens', 'completion_tokens', 'total_tokens']:
+                                        if key in model_response.usage and key in cont_response_json['usage']:
+                                            model_response.usage[key] += cont_response_json['usage'][key]
 
             return model_response
 
