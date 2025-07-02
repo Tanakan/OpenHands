@@ -117,7 +117,7 @@ class CodyLLM(CustomLLM):
         elif 'max_completion_tokens' in optional_params:
             data['max_tokens'] = optional_params['max_completion_tokens']
         else:
-            data['max_tokens'] = 1024
+            data['max_tokens'] = 512
         
         # Add optional parameters if present
         for key in ['stream', 'stop', 'n', 'presence_penalty', 'frequency_penalty']:
@@ -216,13 +216,14 @@ class CodyLLM(CustomLLM):
 
             # Handle continuation if response was truncated
             if optional_params.get('auto_continue', True):
-                max_continuations = optional_params.get('max_continuations', 3)
                 continuation_count = 0
+                last_content_length = 0
+                no_progress_count = 0
                 
-                # Loop until response is complete or max continuations reached
-                while choices and choices[0].finish_reason == 'length' and continuation_count < max_continuations:
+                # Loop until response is complete (no limit on continuations)
+                while choices and choices[0].finish_reason == 'length':
                     continuation_count += 1
-                    logger.info(f"Response truncated. Attempting continuation {continuation_count}/{max_continuations}")
+                    logger.info(f"Response truncated. Attempting continuation {continuation_count}")
                     
                     # Build continuation messages
                     accumulated_content = choices[0].message.content or ""
@@ -298,8 +299,9 @@ class CodyLLM(CustomLLM):
                         logger.error(f"Error during continuation {continuation_count}: {e}")
                         break
                 
+                # This should not happen as we continue until finish_reason != 'length'
                 if choices and choices[0].finish_reason == 'length':
-                    logger.warning(f"Response still truncated after {continuation_count} continuations")
+                    logger.error(f"Unexpected: Response still truncated after {continuation_count} continuations")
 
             return model_response
 
@@ -433,13 +435,14 @@ class CodyLLM(CustomLLM):
 
             # Handle continuation if response was truncated
             if optional_params.get('auto_continue', True):
-                max_continuations = optional_params.get('max_continuations', 3)
                 continuation_count = 0
+                last_content_length = 0
+                no_progress_count = 0
                 
-                # Loop until response is complete or max continuations reached
-                while choices and choices[0].finish_reason == 'length' and continuation_count < max_continuations:
+                # Loop until response is complete (no limit on continuations)
+                while choices and choices[0].finish_reason == 'length':
                     continuation_count += 1
-                    logger.info(f"Response truncated. Attempting continuation {continuation_count}/{max_continuations}")
+                    logger.info(f"Response truncated. Attempting continuation {continuation_count}")
                     
                     # Build continuation messages
                     accumulated_content = choices[0].message.content or ""
@@ -515,8 +518,9 @@ class CodyLLM(CustomLLM):
                         logger.error(f"Error during continuation {continuation_count}: {e}")
                         break
                 
+                # This should not happen as we continue until finish_reason != 'length'
                 if choices and choices[0].finish_reason == 'length':
-                    logger.warning(f"Response still truncated after {continuation_count} continuations")
+                    logger.error(f"Unexpected: Response still truncated after {continuation_count} continuations")
 
             return model_response
 
