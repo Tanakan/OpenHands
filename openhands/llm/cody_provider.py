@@ -107,7 +107,6 @@ class CodyLLM(CustomLLM):
             'model': model,
             'messages': filtered_messages,
             'temperature': optional_params.get('temperature', 1.0),
-            'max_tokens': optional_params.get('max_tokens', 1024),
             'top_p': optional_params.get('top_p', 1.0),
         }
 
