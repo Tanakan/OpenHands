@@ -213,6 +213,12 @@ class CodyLLM(CustomLLM):
             model_response.usage = response_json.get('usage', {})
             model_response.created = response_json.get('created', 0)
             model_response.object = response_json.get('object', 'chat.completion')
+            
+            # Log initial finish_reason and tool_calls
+            if choices:
+                logger.info(f"Initial response finish_reason: {choices[0].finish_reason}")
+                if hasattr(choices[0].message, 'tool_calls') and choices[0].message.tool_calls:
+                    logger.info(f"Initial response has {len(choices[0].message.tool_calls)} tool_calls")
 
             # Handle continuation if response was truncated
             if optional_params.get('auto_continue', True):
@@ -277,6 +283,18 @@ class CodyLLM(CustomLLM):
                                 choices[0].message.content = accumulated_content + cont_content
                                 logger.info(f"Added {len(cont_content)} chars. Total: {len(choices[0].message.content)} chars")
                             
+                            # Handle tool_calls continuation
+                            if 'tool_calls' in cont_message:
+                                # If original message has tool_calls, extend them
+                                if hasattr(choices[0].message, 'tool_calls') and choices[0].message.tool_calls:
+                                    # Append new tool calls
+                                    choices[0].message.tool_calls.extend(cont_message['tool_calls'])
+                                    logger.info(f"Added {len(cont_message['tool_calls'])} tool calls")
+                                else:
+                                    # Set tool calls if not present
+                                    choices[0].message.tool_calls = cont_message['tool_calls']
+                                    logger.info(f"Set {len(cont_message['tool_calls'])} tool calls")
+                            
                             # Update finish reason
                             choices[0].finish_reason = cont_finish_reason
                             
@@ -302,6 +320,10 @@ class CodyLLM(CustomLLM):
                 # This should not happen as we continue until finish_reason != 'length'
                 if choices and choices[0].finish_reason == 'length':
                     logger.error(f"Unexpected: Response still truncated after {continuation_count} continuations")
+                else:
+                    # Log final finish_reason after all continuations
+                    if continuation_count > 0:
+                        logger.info(f"Final finish_reason after {continuation_count} continuations: {choices[0].finish_reason if choices else 'no choices'}")
 
             return model_response
 
@@ -432,6 +454,12 @@ class CodyLLM(CustomLLM):
             model_response.usage = response_json.get('usage', {})
             model_response.created = response_json.get('created', 0)
             model_response.object = response_json.get('object', 'chat.completion')
+            
+            # Log initial finish_reason and tool_calls
+            if choices:
+                logger.info(f"Initial response finish_reason: {choices[0].finish_reason}")
+                if hasattr(choices[0].message, 'tool_calls') and choices[0].message.tool_calls:
+                    logger.info(f"Initial response has {len(choices[0].message.tool_calls)} tool_calls")
 
             # Handle continuation if response was truncated
             if optional_params.get('auto_continue', True):
@@ -496,6 +524,18 @@ class CodyLLM(CustomLLM):
                                 choices[0].message.content = accumulated_content + cont_content
                                 logger.info(f"Added {len(cont_content)} chars. Total: {len(choices[0].message.content)} chars")
                             
+                            # Handle tool_calls continuation
+                            if 'tool_calls' in cont_message:
+                                # If original message has tool_calls, extend them
+                                if hasattr(choices[0].message, 'tool_calls') and choices[0].message.tool_calls:
+                                    # Append new tool calls
+                                    choices[0].message.tool_calls.extend(cont_message['tool_calls'])
+                                    logger.info(f"Added {len(cont_message['tool_calls'])} tool calls")
+                                else:
+                                    # Set tool calls if not present
+                                    choices[0].message.tool_calls = cont_message['tool_calls']
+                                    logger.info(f"Set {len(cont_message['tool_calls'])} tool calls")
+                            
                             # Update finish reason
                             choices[0].finish_reason = cont_finish_reason
                             
@@ -521,6 +561,10 @@ class CodyLLM(CustomLLM):
                 # This should not happen as we continue until finish_reason != 'length'
                 if choices and choices[0].finish_reason == 'length':
                     logger.error(f"Unexpected: Response still truncated after {continuation_count} continuations")
+                else:
+                    # Log final finish_reason after all continuations
+                    if continuation_count > 0:
+                        logger.info(f"Final finish_reason after {continuation_count} continuations: {choices[0].finish_reason if choices else 'no choices'}")
 
             return model_response
 
