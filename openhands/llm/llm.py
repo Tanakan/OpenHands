@@ -84,10 +84,6 @@ FUNCTION_CALLING_SUPPORTED_MODELS = [
     'o4-mini-2025-04-16',
     'gemini-2.5-pro',
     'gpt-4.1',
-    # Cody models (Sourcegraph)
-    'claude-3-5-sonnet-latest',
-    'claude-3-7-sonnet-latest',
-    'claude-sonnet-4-latest',
 ]
 
 REASONING_EFFORT_SUPPORTED_MODELS = [
