@@ -358,11 +358,17 @@ class CodyLLM(CustomLLM):
                 final_message_data['tool_calls'] = accumulated_tool_calls
             final_message_data['role'] = 'assistant'
             
+            # Determine final finish_reason based on accumulated response
+            if accumulated_tool_calls:
+                final_finish_reason = 'tool_calls'
+            else:
+                final_finish_reason = 'stop'
+            
             # Create choice object
             choice_obj = Choices(
                 index=0,
                 message=Message(**final_message_data),
-                finish_reason=response_json.get('choices', [{}])[0].get('finish_reason', 'stop')
+                finish_reason=final_finish_reason
             )
             
             model_response.choices = [choice_obj]
@@ -578,11 +584,17 @@ class CodyLLM(CustomLLM):
                 final_message_data['tool_calls'] = accumulated_tool_calls
             final_message_data['role'] = 'assistant'
             
+            # Determine final finish_reason based on accumulated response
+            if accumulated_tool_calls:
+                final_finish_reason = 'tool_calls'
+            else:
+                final_finish_reason = 'stop'
+            
             # Create choice object
             choice_obj = Choices(
                 index=0,
                 message=Message(**final_message_data),
-                finish_reason=response_json.get('choices', [{}])[0].get('finish_reason', 'stop')
+                finish_reason=final_finish_reason
             )
             
             model_response.choices = [choice_obj]
