@@ -71,16 +71,14 @@ class ContinuationHandler:
                 f"for the function arguments, starting from: ...{incomplete_json[-50:]}"
                 "\nDo not repeat anything before this point. Complete only the JSON."
             )
-        elif response_type == 'mixed':
-            # For mixed responses, continue from where we left off
-            last_chars = accumulated_content[-100:] if len(accumulated_content) > 100 else accumulated_content
-            return (
-                f"Continue from exactly where you left off. Last output was: ...{last_chars}"
-                "\nContinue without repeating."
-            )
         else:
-            # For pure text responses
-            return "Continue from where you left off."
+            # For all other types, use a clear continuation instruction
+            return (
+                "Your previous response was truncated due to length limit. "
+                "Continue generating the response from the exact point where it was cut off. "
+                "IMPORTANT: Do not repeat or restate any content that was already generated. "
+                "Start with the very next word, character, or token that would have followed."
+            )
     
     def merge_tool_calls(self, original_calls: list, continuation_calls: list, 
                         incomplete_index: int) -> list:
