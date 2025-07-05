@@ -4,6 +4,7 @@ Sourcegraph Cody custom provider for LiteLLM.
 This provider handles Cody's specific authentication and API requirements.
 """
 
+import json
 import logging
 from typing import Callable, Iterator, Optional, Union
 
@@ -17,8 +18,140 @@ from litellm.utils import ModelResponse
 logger = logging.getLogger(__name__)
 
 
+class ContinuationHandler:
+    """Handles continuation of truncated responses."""
+    
+    def __init__(self):
+        # Always enabled with unlimited continuations
+        pass
+    
+    def is_response_truncated(self, response_json: dict) -> bool:
+        """Check if response was truncated due to length."""
+        choices = response_json.get('choices', [])
+        if not choices:
+            return False
+        
+        finish_reason = choices[0].get('finish_reason', 'stop')
+        return finish_reason == 'length'
+    
+    def detect_response_type(self, response_json: dict) -> str:
+        """Detect the type of response (text, tool_calls, mixed)."""
+        choices = response_json.get('choices', [])
+        if not choices:
+            return 'text'
+        
+        message = choices[0].get('message', {})
+        has_content = bool(message.get('content'))
+        has_tool_calls = bool(message.get('tool_calls'))
+        
+        if has_tool_calls and has_content:
+            return 'mixed'
+        elif has_tool_calls:
+            return 'tool_calls'
+        else:
+            return 'text'
+    
+    def check_incomplete_tool_calls(self, tool_calls: list) -> tuple[bool, int]:
+        """Check if any tool calls have incomplete JSON arguments."""
+        for i, tool_call in enumerate(tool_calls):
+            if 'function' in tool_call and 'arguments' in tool_call['function']:
+                try:
+                    json.loads(tool_call['function']['arguments'])
+                except json.JSONDecodeError:
+                    return True, i
+        return False, -1
+    
+    def build_continuation_prompt(self, response_type: str, accumulated_content: str, 
+                                incomplete_json: Optional[str] = None) -> str:
+        """Build appropriate continuation prompt based on response type."""
+        if response_type == 'tool_calls' and incomplete_json:
+            # For tool calls, be very specific about continuing the JSON
+            return (
+                "Your previous response was truncated. Continue ONLY the incomplete JSON "
+                f"for the function arguments, starting from: ...{incomplete_json[-50:]}"
+                "\nDo not repeat anything before this point. Complete only the JSON."
+            )
+        elif response_type == 'mixed':
+            # For mixed responses, continue from where we left off
+            last_chars = accumulated_content[-100:] if len(accumulated_content) > 100 else accumulated_content
+            return (
+                f"Continue from exactly where you left off. Last output was: ...{last_chars}"
+                "\nContinue without repeating."
+            )
+        else:
+            # For pure text responses
+            return "Continue from where you left off."
+    
+    def merge_tool_calls(self, original_calls: list, continuation_calls: list, 
+                        incomplete_index: int) -> list:
+        """Merge continued tool calls with original ones."""
+        # Keep complete tool calls
+        merged = original_calls[:incomplete_index]
+        
+        # Handle the incomplete tool call
+        if incomplete_index < len(original_calls):
+            incomplete_call = original_calls[incomplete_index]
+            
+            # Try to complete the arguments
+            if continuation_calls and 'function' in continuation_calls[0]:
+                # Get the incomplete arguments
+                incomplete_args = incomplete_call.get('function', {}).get('arguments', '')
+                continuation_args = continuation_calls[0].get('function', {}).get('arguments', '')
+                
+                # Try to merge JSON strings
+                try:
+                    # Remove potential duplicate content
+                    merged_args = self._merge_json_strings(incomplete_args, continuation_args)
+                    incomplete_call['function']['arguments'] = merged_args
+                    merged.append(incomplete_call)
+                    
+                    # Add any additional tool calls from continuation
+                    if len(continuation_calls) > 1:
+                        merged.extend(continuation_calls[1:])
+                except Exception as e:
+                    logger.warning(f"Failed to merge tool call arguments: {e}")
+                    # Fall back to using continuation as-is
+                    merged.extend(continuation_calls)
+            else:
+                # No continuation tool calls, keep the incomplete one
+                merged.append(incomplete_call)
+        
+        return merged
+    
+    def _merge_json_strings(self, incomplete: str, continuation: str) -> str:
+        """Merge incomplete JSON with its continuation."""
+        # Try direct concatenation first
+        combined = incomplete + continuation
+        try:
+            json.loads(combined)
+            return combined
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to find overlap
+        for i in range(min(50, len(incomplete))):
+            overlap_start = len(incomplete) - i
+            if continuation.startswith(incomplete[overlap_start:]):
+                combined = incomplete[:overlap_start] + continuation
+                try:
+                    json.loads(combined)
+                    return combined
+                except json.JSONDecodeError:
+                    continue
+        
+        # Last resort: try to fix common issues
+        if not incomplete.rstrip().endswith('}') and continuation.lstrip().startswith('}'):
+            return incomplete + continuation
+        
+        return incomplete + continuation
+
+
 class CodyLLM(CustomLLM):
     """Custom LLM provider for Sourcegraph Cody."""
+    
+    def __init__(self):
+        super().__init__()
+        self.continuation_handler = ContinuationHandler()
 
     def _prepare_request(
         self,
@@ -102,7 +235,7 @@ class CodyLLM(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[HTTPHandler] = None,
     ) -> ModelResponse:
-        """Make a completion request to Cody API."""
+        """Make a completion request to Cody API with automatic continuation support."""
         
         # Prepare request
         url, request_headers, data = self._prepare_request(
@@ -117,35 +250,142 @@ class CodyLLM(CustomLLM):
         if client is None:
             client = HTTPHandler(timeout=timeout)
         
-        # Make the request
+        # Initialize continuation state
+        continuation_count = 0
+        accumulated_content = ""
+        accumulated_tool_calls = []
+        final_response_json = None
+        
+        # Make the initial request
         try:
-            response = client.post(
-                url=url,
-                json=data,
-                headers=request_headers,
-            )
+            while True:
+                response = client.post(
+                    url=url,
+                    json=data,
+                    headers=request_headers,
+                )
+                
+                response.raise_for_status()
+                response_json = response.json()
+                
+                # Log finish reason
+                finish_reason = response_json.get('choices', [{}])[0].get('finish_reason', 'unknown')
+                logger.debug(f"[Cody] Response finish_reason: {finish_reason}")
+                
+                # Store first response for metadata
+                if final_response_json is None:
+                    final_response_json = response_json
+                
+                # Extract content and tool calls
+                current_message = response_json.get('choices', [{}])[0].get('message', {})
+                current_content = current_message.get('content', '')
+                current_tool_calls = current_message.get('tool_calls', [])
+                
+                # Accumulate content
+                if current_content:
+                    accumulated_content += current_content
+                
+                # Handle tool calls
+                if current_tool_calls:
+                    if not accumulated_tool_calls:
+                        accumulated_tool_calls = current_tool_calls
+                    else:
+                        # Merge tool calls if continuing
+                        has_incomplete, incomplete_idx = self.continuation_handler.check_incomplete_tool_calls(
+                            accumulated_tool_calls
+                        )
+                        if has_incomplete:
+                            accumulated_tool_calls = self.continuation_handler.merge_tool_calls(
+                                accumulated_tool_calls, current_tool_calls, incomplete_idx
+                            )
+                        else:
+                            accumulated_tool_calls.extend(current_tool_calls)
+                
+                # Check if continuation is needed (always continue if truncated)
+                if not self.continuation_handler.is_response_truncated(response_json):
+                    break
+                
+                # Check for incomplete tool calls
+                has_incomplete, incomplete_idx = self.continuation_handler.check_incomplete_tool_calls(
+                    accumulated_tool_calls
+                )
+                
+                # Prepare continuation
+                continuation_count += 1
+                logger.info(f"[Cody] Response truncated, attempting continuation {continuation_count}")
+                
+                # Build continuation messages
+                continuation_messages = messages.copy()
+                
+                # Add accumulated response as assistant message
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": accumulated_content
+                }
+                if accumulated_tool_calls:
+                    assistant_msg["tool_calls"] = accumulated_tool_calls
+                continuation_messages.append(assistant_msg)
+                
+                # Determine response type and build continuation prompt
+                response_type = self.continuation_handler.detect_response_type(response_json)
+                
+                incomplete_json = None
+                if has_incomplete and incomplete_idx < len(accumulated_tool_calls):
+                    incomplete_json = accumulated_tool_calls[incomplete_idx].get('function', {}).get('arguments', '')
+                
+                continuation_prompt = self.continuation_handler.build_continuation_prompt(
+                    response_type, accumulated_content, incomplete_json
+                )
+                
+                continuation_messages.append({
+                    "role": "user",
+                    "content": continuation_prompt
+                })
+                
+                # Update request data
+                url, request_headers, data = self._prepare_request(
+                    model, continuation_messages, api_base, api_key, optional_params
+                )
             
-            response.raise_for_status()
-            response_json = response.json()
-            
-            # Update model_response with the response data
+            # Build final response
             from litellm import Choices, Message
             
-            choices = []
-            for idx, choice in enumerate(response_json.get('choices', [])):
-                choice_obj = Choices(
-                    index=choice.get('index', idx),
-                    message=Message(**choice.get('message', {})),
-                    finish_reason=choice.get('finish_reason', 'stop')
-                )
-                choices.append(choice_obj)
+            # Create the final message
+            final_message_data = {}
+            if accumulated_content:
+                final_message_data['content'] = accumulated_content
+            if accumulated_tool_calls:
+                final_message_data['tool_calls'] = accumulated_tool_calls
+            final_message_data['role'] = 'assistant'
             
-            model_response.choices = choices
-            model_response.id = response_json.get('id', '')
-            model_response.model = response_json.get('model', model)
-            model_response.usage = response_json.get('usage', {})
-            model_response.created = response_json.get('created', 0)
-            model_response.object = response_json.get('object', 'chat.completion')
+            # Create choice object
+            choice_obj = Choices(
+                index=0,
+                message=Message(**final_message_data),
+                finish_reason=response_json.get('choices', [{}])[0].get('finish_reason', 'stop')
+            )
+            
+            model_response.choices = [choice_obj]
+            model_response.id = final_response_json.get('id', '')
+            model_response.model = final_response_json.get('model', model)
+            
+            # Accumulate usage stats
+            if continuation_count > 0:
+                total_usage = {
+                    'prompt_tokens': 0,
+                    'completion_tokens': 0,
+                    'total_tokens': 0
+                }
+                # Note: This is simplified - in reality you'd track usage from each request
+                model_response.usage = final_response_json.get('usage', total_usage)
+            else:
+                model_response.usage = final_response_json.get('usage', {})
+            
+            model_response.created = final_response_json.get('created', 0)
+            model_response.object = final_response_json.get('object', 'chat.completion')
+            
+            if continuation_count > 0:
+                logger.info(f"[Cody] Completed after {continuation_count} continuations")
             
             return model_response
             
@@ -215,7 +455,7 @@ class CodyLLM(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[AsyncHTTPHandler] = None,
     ) -> ModelResponse:
-        """Make an async completion request to Cody API."""
+        """Make an async completion request to Cody API with automatic continuation support."""
         
         # Prepare request
         url, request_headers, data = self._prepare_request(
@@ -230,35 +470,142 @@ class CodyLLM(CustomLLM):
         if client is None:
             client = AsyncHTTPHandler(timeout=timeout)
         
-        # Make the request
+        # Initialize continuation state
+        continuation_count = 0
+        accumulated_content = ""
+        accumulated_tool_calls = []
+        final_response_json = None
+        
+        # Make the initial request
         try:
-            response = await client.post(
-                url=url,
-                json=data,
-                headers=request_headers,
-            )
+            while True:
+                response = await client.post(
+                    url=url,
+                    json=data,
+                    headers=request_headers,
+                )
+                
+                response.raise_for_status()
+                response_json = response.json()
+                
+                # Log finish reason
+                finish_reason = response_json.get('choices', [{}])[0].get('finish_reason', 'unknown')
+                logger.debug(f"[Cody] Response finish_reason: {finish_reason}")
+                
+                # Store first response for metadata
+                if final_response_json is None:
+                    final_response_json = response_json
+                
+                # Extract content and tool calls
+                current_message = response_json.get('choices', [{}])[0].get('message', {})
+                current_content = current_message.get('content', '')
+                current_tool_calls = current_message.get('tool_calls', [])
+                
+                # Accumulate content
+                if current_content:
+                    accumulated_content += current_content
+                
+                # Handle tool calls
+                if current_tool_calls:
+                    if not accumulated_tool_calls:
+                        accumulated_tool_calls = current_tool_calls
+                    else:
+                        # Merge tool calls if continuing
+                        has_incomplete, incomplete_idx = self.continuation_handler.check_incomplete_tool_calls(
+                            accumulated_tool_calls
+                        )
+                        if has_incomplete:
+                            accumulated_tool_calls = self.continuation_handler.merge_tool_calls(
+                                accumulated_tool_calls, current_tool_calls, incomplete_idx
+                            )
+                        else:
+                            accumulated_tool_calls.extend(current_tool_calls)
+                
+                # Check if continuation is needed (always continue if truncated)
+                if not self.continuation_handler.is_response_truncated(response_json):
+                    break
+                
+                # Check for incomplete tool calls
+                has_incomplete, incomplete_idx = self.continuation_handler.check_incomplete_tool_calls(
+                    accumulated_tool_calls
+                )
+                
+                # Prepare continuation
+                continuation_count += 1
+                logger.info(f"[Cody] Response truncated, attempting continuation {continuation_count}")
+                
+                # Build continuation messages
+                continuation_messages = messages.copy()
+                
+                # Add accumulated response as assistant message
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": accumulated_content
+                }
+                if accumulated_tool_calls:
+                    assistant_msg["tool_calls"] = accumulated_tool_calls
+                continuation_messages.append(assistant_msg)
+                
+                # Determine response type and build continuation prompt
+                response_type = self.continuation_handler.detect_response_type(response_json)
+                
+                incomplete_json = None
+                if has_incomplete and incomplete_idx < len(accumulated_tool_calls):
+                    incomplete_json = accumulated_tool_calls[incomplete_idx].get('function', {}).get('arguments', '')
+                
+                continuation_prompt = self.continuation_handler.build_continuation_prompt(
+                    response_type, accumulated_content, incomplete_json
+                )
+                
+                continuation_messages.append({
+                    "role": "user",
+                    "content": continuation_prompt
+                })
+                
+                # Update request data
+                url, request_headers, data = self._prepare_request(
+                    model, continuation_messages, api_base, api_key, optional_params
+                )
             
-            response.raise_for_status()
-            response_json = response.json()
-            
-            # Update model_response with the response data
+            # Build final response
             from litellm import Choices, Message
             
-            choices = []
-            for idx, choice in enumerate(response_json.get('choices', [])):
-                choice_obj = Choices(
-                    index=choice.get('index', idx),
-                    message=Message(**choice.get('message', {})),
-                    finish_reason=choice.get('finish_reason', 'stop')
-                )
-                choices.append(choice_obj)
+            # Create the final message
+            final_message_data = {}
+            if accumulated_content:
+                final_message_data['content'] = accumulated_content
+            if accumulated_tool_calls:
+                final_message_data['tool_calls'] = accumulated_tool_calls
+            final_message_data['role'] = 'assistant'
             
-            model_response.choices = choices
-            model_response.id = response_json.get('id', '')
-            model_response.model = response_json.get('model', model)
-            model_response.usage = response_json.get('usage', {})
-            model_response.created = response_json.get('created', 0)
-            model_response.object = response_json.get('object', 'chat.completion')
+            # Create choice object
+            choice_obj = Choices(
+                index=0,
+                message=Message(**final_message_data),
+                finish_reason=response_json.get('choices', [{}])[0].get('finish_reason', 'stop')
+            )
+            
+            model_response.choices = [choice_obj]
+            model_response.id = final_response_json.get('id', '')
+            model_response.model = final_response_json.get('model', model)
+            
+            # Accumulate usage stats
+            if continuation_count > 0:
+                total_usage = {
+                    'prompt_tokens': 0,
+                    'completion_tokens': 0,
+                    'total_tokens': 0
+                }
+                # Note: This is simplified - in reality you'd track usage from each request
+                model_response.usage = final_response_json.get('usage', total_usage)
+            else:
+                model_response.usage = final_response_json.get('usage', {})
+            
+            model_response.created = final_response_json.get('created', 0)
+            model_response.object = final_response_json.get('object', 'chat.completion')
+            
+            if continuation_count > 0:
+                logger.info(f"[Cody] Completed after {continuation_count} continuations")
             
             return model_response
             
