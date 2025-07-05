@@ -176,7 +176,7 @@ class CodyLLM(CustomLLM):
         # Prepare headers with Cody authentication
         headers = {
             'Authorization': f'token {api_key}',
-            'X-Requested-With': 'openhands',
+            'X-Requested-With': 'openhands 0.1.0',  # Format: <client-name> <client-version>
             'Content-Type': 'application/json',
         }
         
